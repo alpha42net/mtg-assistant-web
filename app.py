@@ -6,7 +6,7 @@ import time
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="MTG Assistant Pro", layout="wide")
-st.title("🧙‍♂️ MTG Assistant Pro : Logique 2-1-1")
+st.title("🧙‍♂️ MTG Assistant Pro : Logique 2-1-1 Stricte")
 
 def clean_for_pdf(text):
     if not isinstance(text, str): return str(text)
@@ -34,7 +34,7 @@ with st.sidebar:
     first_n = st.text_input("PRÉNOM", value="Jace")
     dci_v = st.text_input("DCI", value="000")
     st.header("🏆 Tournament")
-    event_v = st.text_input("EVENT")
+    event_v = st.text_input("EVENT", value="")
     date_v = st.text_input("DATE", value=time.strftime("%d/%m/%Y"))
     dname_v = st.text_input("DECK NAME", value="Mon Deck")
 
@@ -55,32 +55,34 @@ if file:
                 sf = get_scryfall_data(name)
                 total_qty = int(row['Quantity'])
                 
-                # --- LOGIQUE 2-1-1 ---
+                # --- LOGIQUE 2-1-1 STRICTE ---
+                m, s, c = 0, 0, 0
                 if sf["is_basic"]:
-                    m, s, c = total_qty, 0, 0
+                    # Terrains de base : Tout en Main
+                    m = total_qty
                 else:
-                    # Pour chaque tranche de 4 : 2 Main, 1 Side, 1 Cut
-                    # Exemple: 4 cartes -> 2, 1, 1
-                    # Exemple: 1 carte  -> 1, 0, 0 (priorité au Main)
-                    m, s, c = 0, 0, 0
-                    for _ in range(total_qty):
-                        if m < 2: m += 1
-                        elif s < 1: s += 1
-                        elif c < 1: c += 1
-                        else: # Si on dépasse 4, on recommence la boucle ou on empile
-                            m += 1 # Ajuste ici si tu veux que le surplus de 4 aille ailleurs
+                    # Pour chaque carte individuelle de la pile :
+                    for card_index in range(1, total_qty + 1):
+                        if card_index <= 2:
+                            m += 1  # Les 2 premières -> Main
+                        elif card_index == 3:
+                            s += 1  # La 3ème -> Side
+                        elif card_index == 4:
+                            c += 1  # La 4ème -> Cut
+                        else:
+                            c += 1  # Tout le surplus au-delà de 4 -> Cut
                 
                 processed.append({
                     "Card Name": name, "Main": m, "Side": s, "Cut": c, 
                     "Total": total_qty, "Type": sf["type"], "CMC": sf["cmc"]
                 })
             
-            # TRI PAR NOM
+            # Sauvegarde et Tri
             st.session_state.master_df = pd.DataFrame(processed).sort_values("Card Name")
             status.update(label="Répartition 2-1-1 Terminée !", state="complete")
 
-    # --- ÉDITEUR ET CALCULS ---
-    # On affiche le tableau trié. Les calculs se mettent à jour quand on change une cellule.
+    # --- ÉDITEUR ET CALCULS DYNAMIQUES ---
+    # On utilise l'éditeur pour permettre les ajustements manuels
     edited_df = st.data_editor(
         st.session_state.master_df,
         hide_index=True,
@@ -88,7 +90,7 @@ if file:
         key="editor_211"
     )
 
-    # RECALCUL IMMÉDIAT DES TOTAUX
+    # RECALCUL DES TOTAUX (Si tu modifies une case, les compteurs en bas bougent)
     edited_df['Total'] = edited_df['Main'] + edited_df['Side'] + edited_df['Cut']
     st.session_state.master_df = edited_df 
 
@@ -102,27 +104,24 @@ if file:
     col2.metric("SIDEBOARD", f"{s_total} / 15", delta=int(s_total-15), delta_color="inverse")
     col3.metric("TOTAL CUT", c_total)
 
-    # --- PDF ---
+    # --- PDF SANS ERREUR UNICODE ---
     if st.button("📄 GÉNÉRER LE PDF PRO", use_container_width=True, type="primary"):
         pdf = FPDF()
-        
-        # Page 1: Decklist
         pdf.add_page()
         pdf.set_font("Arial", "B", 16)
-        pdf.cell(190, 10, "MTG DECKLIST - 2-1-1 LOGIC", 0, 1, "C")
-        pdf.set_font("Arial", "", 9)
-        pdf.cell(190, 7, f"PLAYER: {first_n} {last_n} | EVENT: {event_v}", 1, 1)
-        pdf.ln(5)
+        pdf.cell(190, 10, "MAGIC: THE GATHERING DECKLIST", 0, 1, "C")
         
-        # Tableau Page 2: Inventaire (Le tableau Windows)
-        pdf.add_page()
-        pdf.set_font("Arial", "B", 12)
-        pdf.cell(190, 10, "INVENTAIRE COMPLET (M / S / C)", 0, 1, "C")
+        pdf.set_font("Arial", "", 8)
+        pdf.cell(95, 7, f"NAME: {clean_for_pdf(last_n.upper())} {clean_for_pdf(first_n)}", 1)
+        pdf.cell(95, 7, f"EVENT: {clean_for_pdf(event_v)}", 1, 1)
         pdf.ln(5)
+
+        # Tableau Inventaire (Page 1)
         pdf.set_font("Arial", "B", 8)
-        headers = ["M", "S", "C", "Tot", "Nom", "Type"]
+        pdf.set_fill_color(230, 230, 230)
+        h = ["M", "S", "C", "Tot", "Nom", "Type"]
         w = [10, 10, 10, 10, 80, 70]
-        for i, h in enumerate(headers): pdf.cell(w[i], 7, h, 1, 0, "C")
+        for i, head in enumerate(h): pdf.cell(w[i], 7, head, 1, 0, "C", True)
         pdf.ln()
         
         pdf.set_font("Arial", "", 7)
