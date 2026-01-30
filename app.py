@@ -4,22 +4,24 @@ from fpdf import FPDF
 import requests
 import time
 
+# --- CONFIGURATION ---
 st.set_page_config(page_title="MTG Assistant Pro", layout="wide")
+
+class PDF(FPDF):
+    def vertical_text(self, x, y, text):
+        with self.rotation(90, x, y):
+            self.text(x, y, text)
 
 def clean_pdf_text(text):
     if not isinstance(text, str): return str(text)
-    return text.encode('latin-1', 'replace').decode('latin-1')
+    return text.replace('\u2014', '-').replace('\u2013', '-').encode('latin-1', 'replace').decode('latin-1')
 
 def get_scryfall_data(card_name):
     try:
         url = f"https://api.scryfall.com/cards/named?exact={card_name.strip()}"
         res = requests.get(url, timeout=4).json()
         type_line = res.get("type_line", "")
-        return {
-            "type": type_line, 
-            "is_land": "Land" in type_line,
-            "is_basic": "Basic" in type_line
-        }
+        return {"type": type_line, "is_land": "Land" in type_line, "is_basic": "Basic" in type_line}
     except: return {"type": "Unknown", "is_land": False, "is_basic": False}
 
 # --- SIDEBAR ---
@@ -32,7 +34,7 @@ with st.sidebar:
     date_v = st.text_input("DATE", time.strftime("%d/%m/%Y"))
     dname_v = st.text_input("DECK NAME", "My Deck")
 
-file = st.file_uploader("📂 Chargez votre CSV", type="csv")
+file = st.file_uploader("📂 Import CSV", type="csv")
 
 if file:
     if 'master_df' not in st.session_state:
@@ -57,57 +59,52 @@ if file:
                     elif i == 3: s += 1
                     else: c += 1
             
-            processed.append({
-                "Card Name": name, "Main": m, "Side": s, "Cut": c, 
-                "Total": qty, "Type": sf["type"], "IsLand": sf["is_land"]
-            })
+            processed.append({"Card Name": name, "Main": m, "Side": s, "Cut": c, "Total": qty, "IsLand": sf["is_land"], "Type": sf["type"]})
         st.session_state.master_df = pd.DataFrame(processed).sort_values("Card Name")
 
-    # --- ÉDITEUR ---
     edited_df = st.data_editor(st.session_state.master_df, hide_index=True, use_container_width=True)
-    
-    # Recalcul des métriques
-    c_m = edited_df['Main'].sum()
-    c_s = edited_df['Side'].sum()
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("MAIN DECK", f"{c_m} / 60", delta=int(c_m-60), delta_color="inverse")
-    col2.metric("SIDEBOARD", f"{c_s} / 15", delta=int(c_s-15), delta_color="inverse")
-    col3.metric("TOTAL CUT", edited_df['Cut'].sum())
+    st.session_state.master_df = edited_df
 
-    if st.button("📄 GÉNERER PDF WINDOWS", use_container_width=True, type="primary"):
-        pdf = FPDF()
-        pdf.add_page()
+    c_m, c_s = edited_df['Main'].sum(), edited_df['Side'].sum()
+    col1, col2, col3 = st.columns(3)
+    col1.metric("MAIN", f"{c_m} / 60")
+    col2.metric("SIDE", f"{c_s} / 15")
+    col3.metric("CUT", edited_df['Cut'].sum())
+
+    if st.button("📄 GÉNERER PDF COMPLET (2 PAGES)", use_container_width=True, type="primary"):
+        pdf = PDF()
         
-        # --- HEADER (Coordonnées exactes de ton image_9c15df.png) ---
+        # --- PAGE 1 : FORMULAIRE OFFICIEL ---
+        pdf.add_page()
         pdf.set_font("Arial", "B", 16)
         pdf.text(35, 15, "MAGIC: THE GATHERING DECKLIST")
         pdf.set_font("Arial", "", 8)
-        pdf.text(35, 22, f"DATE: {clean_pdf_text(date_v)}   LOCATION: {clean_pdf_text(loc_v)}")
-        pdf.set_xy(35, 25); pdf.cell(165, 7, f"EVENT: {clean_pdf_text(event_v)}", 0)
-        pdf.set_xy(35, 32); pdf.cell(165, 7, f"DECK: {clean_pdf_text(dname_v)}", 0)
+        pdf.set_xy(35, 18)
+        pdf.cell(40, 7, f"DATE: {clean_pdf_text(date_v)}", "B")
+        pdf.cell(50, 7, f"LOCATION: {clean_pdf_text(loc_v)}", "B", 1)
+        pdf.set_x(35)
+        pdf.cell(90, 7, f"EVENT: {clean_pdf_text(event_v)}", "B", 1)
+        pdf.set_x(35)
+        pdf.cell(90, 7, f"DECK NAME: {clean_pdf_text(dname_v)}", "B", 1)
         
-        # Rectangle latéral et Nom vertical (Correction du bug de rotation)
         pdf.rect(10, 50, 15, 230)
-        pdf.set_font("Arial", "B", 7)
-        # On simule la rotation sans la fonction buggée
-        pdf.text(14, 160, f"NAME: {clean_pdf_text(last_n.upper())}, {clean_pdf_text(first_n)}")
+        pdf.set_font("Arial", "B", 8)
+        with pdf.rotation(90, 17, 160):
+            pdf.text(17, 160, f"NAME: {clean_pdf_text(last_n.upper())}, {clean_pdf_text(first_n)}")
 
-        # --- SECTION SPELLS (Gauches) ---
+        # Spells (Gauche)
         pdf.set_xy(28, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
         y = 56
         spells = edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == False)]
         for _, r in spells.iterrows():
             pdf.set_xy(28, y); pdf.set_font("Arial", "", 7)
             pdf.cell(8, 4, str(int(r['Main'])), "B", 0, "C")
-            pdf.cell(77, 4, clean_pdf_text(r['Card Name']), "B", 1)
-            y += 4
+            pdf.cell(77, 4, clean_pdf_text(r['Card Name']), "B", 1); y += 4
         
         pdf.set_xy(28, 260); pdf.set_font("Arial", "B", 10)
-        pdf.cell(65, 10, "TOTAL MAIN DECK:", 1, 0, "R")
-        pdf.cell(20, 10, str(int(c_m)), 1, 1, "C")
+        pdf.cell(65, 10, "TOTAL MAIN DECK:", 1, 0, "R"); pdf.cell(20, 10, str(int(c_m)), 1, 1, "C")
 
-        # --- SECTION LANDS & SIDEBOARD (Droites) ---
+        # Lands & Sideboard (Droite)
         rx, yr = 118, 50
         pdf.set_xy(rx, yr); pdf.set_font("Arial", "B", 9); pdf.cell(82, 6, "Lands:", 0, 1); yr += 6
         lands = edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == True)]
@@ -126,21 +123,21 @@ if file:
         pdf.set_xy(rx, 225); pdf.set_font("Arial", "B", 10)
         pdf.cell(62, 8, "TOTAL SIDEBOARD:", 1, 0, "R"); pdf.cell(20, 8, str(int(c_s)), 1, 1, "C")
 
-        # --- SECTION JUGES ---
+        # Judge Block
         jy = 238
         pdf.set_xy(118, jy); pdf.set_font("Arial", "B", 7); pdf.cell(82, 5, "FOR OFFICIAL USE ONLY", 1, 1, "C")
         pdf.set_xy(118, jy+5); pdf.cell(41, 10, "Deck Check:", 1); pdf.cell(41, 10, "Status:", 1)
         pdf.set_xy(118, jy+15); pdf.cell(41, 10, "Judge:", 1); pdf.cell(41, 10, "Main Check:", 1)
 
-        # PAGE 2
+        # --- PAGE 2 : INVENTAIRE GEEK ---
         pdf.add_page()
         pdf.set_font("Arial", "B", 14)
-        pdf.cell(190, 10, "ANALYSE GEEK DU DECK (TOUTES LES CARTES)", 0, 1, "C")
-        pdf.set_font("Arial", "B", 8)
-        pdf.set_fill_color(220, 220, 220)
+        pdf.cell(190, 10, "ANALYSE GEEK DU DECK (INVENTAIRE COMPLET)", 0, 1, "C")
+        pdf.ln(5)
+        pdf.set_font("Arial", "B", 8); pdf.set_fill_color(220, 220, 220)
         h = ["Main", "Side", "Cut", "Nom de la Carte", "Type"]
         w = [12, 12, 12, 80, 74]
-        for i, text in enumerate(h): pdf.cell(w[i], 6, text, 1, 0, "C", True)
+        for i, text in enumerate(h): pdf.cell(w[i], 7, text, 1, 0, "C", True)
         pdf.ln()
         pdf.set_font("Arial", "", 7)
         for _, r in edited_df.sort_values("Card Name").iterrows():
@@ -151,4 +148,4 @@ if file:
             pdf.cell(74, 5, f" {clean_pdf_text(r['Type'][:45])}", 1, 1)
 
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'replace')
-        st.download_button("📥 TÉLÉCHARGER LE PDF GEEK", data=pdf_bytes, file_name=f"Deck_{last_n}.pdf")
+        st.download_button("📥 TÉLÉCHARGER LE PDF COMPLET", data=pdf_bytes, file_name=f"Deck_{last_n}.pdf")
