@@ -42,35 +42,44 @@ with st.sidebar:
     loc_v = st.text_input("LOCATION", "Montreal")
     date_v = st.text_input("DATE", time.strftime("%d/%m/%Y"))
     dname_v = st.text_input("DECK NAME", "My Deck")
-    if st.button("🚨 RESET TOTAL (FIX 80)"):
+    if st.button("🚨 VIDER LE CACHE (FORCE 60)"):
         st.session_state.clear()
         st.rerun()
 
 file = st.file_uploader("📂 Chargez votre CSV", type="csv")
 
 if file:
-    if 'master_df' not in st.session_state:
+    # --- LOGIQUE DE FORCE ---
+    if 'master_df' not in st.session_state or st.sidebar.button("🔄 RECALCULER DEPUIS LE FICHIER"):
         raw_df = pd.read_csv(file)
         raw_df.columns = [c.strip() for c in raw_df.columns]
         n_col = "Card Name" if "Card Name" in raw_df.columns else raw_df.columns[0]
+        
         data = []
         for _, row in raw_df.groupby(n_col).agg({'Quantity': 'sum'}).reset_index().iterrows():
             name, qty = str(row[n_col]), int(row['Quantity'])
             sf = get_scryfall_data(name)
-            # Logique 2-1-1 stricte
+            
+            # Répartition stricte pour ne jamais dépasser 60
             m, s, c = 0, 0, 0
-            if sf["is_basic"]: m = qty
+            if sf["is_basic"]: 
+                m = qty
             else:
-                m = min(qty, 2)
-                if qty > 2: s = 1
-                if qty > 3: c = qty - 3
+                m = min(qty, 2) # On force 2 exemplaires max en Main
+                if qty > 2: s = 1 # Le 3ème en Side
+                if qty > 3: c = qty - 3 # Le reste en poubelle
+            
             data.append({"Card Name": name, "Main": m, "Side": s, "Cut": c, "IsLand": sf["is_land"], "Type": sf["type"], "CMC": sf["cmc"]})
+        
         st.session_state.master_df = pd.DataFrame(data).sort_values("Card Name")
 
     edited_df = st.data_editor(st.session_state.master_df, hide_index=True, use_container_width=True)
+    
+    # Calcul des totaux en temps réel
     tm, ts = edited_df['Main'].sum(), edited_df['Side'].sum()
+    st.metric("TOTAL MAIN DECK", f"{tm} / 60")
 
-    if st.button("📄 GÉNERER PDF COMPLET (P1+P2)", use_container_width=True, type="primary"):
+    if st.button("📄 GÉNERER PDF COMPLET (P1 + P2)", use_container_width=True, type="primary"):
         pdf = MTGPDF()
         
         # --- PAGE 1 ---
@@ -83,9 +92,9 @@ if file:
         pdf.rect(10, 50, 15, 230)
         pdf.vertical_name(17, 160, f"NAME: {clean_pdf_text(last_n)}, {clean_pdf_text(first_n)}")
 
-        # Main Deck Spells
-        pdf.set_xy(28, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
+        # Listes
         y = 56
+        pdf.set_xy(28, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
         for _, r in edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == False)].iterrows():
             pdf.set_xy(28, y); pdf.set_font("Arial", "", 7)
             pdf.cell(8, 4, str(int(r['Main'])), "B", 0, "C"); pdf.cell(77, 4, clean_pdf_text(r['Card Name']), "B", 1); y += 4
@@ -93,7 +102,6 @@ if file:
         pdf.set_xy(28, 255); pdf.set_font("Arial", "B", 10)
         pdf.cell(65, 8, "TOTAL MAIN DECK:", 1, 0, "R"); pdf.cell(20, 8, str(int(tm)), 1, 1, "C")
 
-        # Lands & Side
         rx, ry = 118, 50
         pdf.set_xy(rx, ry); pdf.set_font("Arial", "B", 9); pdf.cell(82, 6, "Lands:", 0, 1); ry += 6
         for _, r in edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == True)].iterrows():
@@ -106,7 +114,7 @@ if file:
             pdf.cell(8, 4, str(int(r['Side'])), "B", 0, "C"); pdf.cell(74, 4, clean_pdf_text(r['Card Name']), "B", 1); ry += 4
         pdf.set_xy(rx, 225); pdf.cell(62, 8, "TOTAL SIDEBOARD:", 1, 0, "R"); pdf.cell(20, 8, str(int(ts)), 1, 1, "C")
 
-        # TABLEAU DES JUGES (Re-ajusté)
+        # TABLEAU JUGES
         jy = 238
         pdf.set_xy(118, jy); pdf.set_font("Arial", "B", 7); pdf.cell(82, 5, "FOR OFFICIAL USE ONLY", 1, 1, "C")
         pdf.set_xy(118, jy+5); pdf.cell(41, 10, "Deck Check:", 1); pdf.cell(41, 10, "Status:", 1)
@@ -117,7 +125,7 @@ if file:
         pdf.set_font("Arial", "B", 8); pdf.set_fill_color(220, 220, 220)
         h = ["Main", "Side", "Cut", "Nom", "Type", "CMC"]
         w = [10, 10, 10, 75, 70, 15]
-        for i, txt in enumerate(h): pdf.cell(w[i], 7, txt, 1, 0, "C", True)
+        for i, t in enumerate(h): pdf.cell(w[i], 7, t, 1, 0, "C", True)
         pdf.ln()
         for i, (_, r) in enumerate(edited_df.sort_values("Card Name").iterrows()):
             pdf.set_fill_color(245, 245, 245) if i % 2 == 0 else pdf.set_fill_color(255, 255, 255)
@@ -128,4 +136,4 @@ if file:
             pdf.cell(70, 6, f" {clean_pdf_text(r['Type'][:35])}", 1, 0, "L", True)
             pdf.cell(15, 6, str(int(r['CMC'])), 1, 1, "C", True)
 
-        st.download_button("📥 TÉLÉCHARGER LE PDF COMPLET", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="deck_final.pdf")
+        st.download_button("📥 TÉLÉCHARGER PDF FINAL", data=pdf.output(dest='S').encode('latin-1', 'replace'), file_name="deck.pdf")
