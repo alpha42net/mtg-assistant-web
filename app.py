@@ -3,21 +3,17 @@ import pandas as pd
 from fpdf import FPDF
 import requests
 import time
-import io
 
 # --- CONFIGURATION PAGE ---
-st.set_page_config(page_title="MTG Assistant Pro Web", layout="wide")
+st.set_page_config(page_title="MTG Assistant Pro", layout="wide")
+st.title("🧙‍♂️ MTG Assistant Pro")
 
-# Version simplifiée du CSS pour éviter le TypeError
-st.markdown("<style>.main { background-color: #f0f2f6; }</style>", unsafe_allow_name_with_html=True)
-
-st.title("🧙‍♂️ MTG Assistant Pro : Web Edition")
-
-# --- FONCTIONS TECHNIQUES ---
+# --- FONCTION NETTOYAGE TEXTE ---
 def clean_pdf_text(text):
     if not isinstance(text, str): return str(text)
     return text.replace('_', ' ').encode('latin-1', 'replace').decode('latin-1')
 
+# --- FONCTION SCRYFALL ---
 def get_scryfall_data(card_name):
     try:
         url = f"https://api.scryfall.com/cards/named?exact={card_name.strip()}"
@@ -38,114 +34,99 @@ with st.sidebar:
     event_v = st.text_input("EVENT", value="")
     dname_v = st.text_input("DECK NAME", value="")
 
-# --- CHARGEMENT ---
-file = st.file_uploader("📂 Déposez votre CSV", type="csv")
+# --- LOGIQUE DE FICHIER ---
+file = st.file_uploader("📂 Chargez votre CSV MTG", type="csv")
 
 if file:
+    # On initialise les données dans la session pour éviter de recharger l'API
     if 'master_df' not in st.session_state:
-        try:
-            df_raw = pd.read_csv(file)
-            df_raw.columns = [c.strip() for c in df_raw.columns]
-            col_name = "Card Name" if "Card Name" in df_raw.columns else df_raw.columns[0]
-            
-            df_g = df_raw.groupby(col_name).agg({'Quantity': 'sum'}).reset_index()
-            processed = []
-            total_main = 0
-            
-            with st.status("🔮 Synchronisation Scryfall...", expanded=True) as status:
-                for i, (_, r) in enumerate(df_g.sort_values(by=col_name).iterrows()):
-                    name = str(r[col_name])
-                    sf = get_scryfall_data(name)
-                    time.sleep(0.05)
-                    
-                    is_land = "Land" in sf["type"] or any(x in name.lower() for x in ["island", "forest", "swamp", "mountain", "plains"])
-                    m = int(r['Quantity']) if is_land else min(int(r['Quantity']), 4)
-                    s = 0 if is_land else int(r['Quantity']) - m
-                    total_main += m
-                    processed.append({"Nom": name, "Total": int(r['Quantity']), "Main": m, "Side": s, "Cut": 0, "Type": sf["type"], "CMC": sf["cmc"]})
+        df_raw = pd.read_csv(file)
+        df_raw.columns = [c.strip() for c in df_raw.columns]
+        col_name = "Card Name" if "Card Name" in df_raw.columns else df_raw.columns[0]
+        
+        df_g = df_raw.groupby(col_name).agg({'Quantity': 'sum'}).reset_index()
+        processed = []
+        
+        with st.status("🔮 Analyse Scryfall en cours...", expanded=True) as status:
+            for i, row in df_g.iterrows():
+                name = str(row[col_name])
+                st.write(f"Vérification : {name}")
+                sf = get_scryfall_data(name)
+                time.sleep(0.05)
                 
-                st.session_state.master_df = pd.DataFrame(processed)
-                status.update(label="Analyse terminée !", state="complete")
-        except Exception as e:
-            st.error(f"Erreur lors de la lecture du CSV: {e}")
+                is_land = "Land" in sf["type"]
+                qty = int(row['Quantity'])
+                
+                processed.append({
+                    "Nom": name, 
+                    "Main": qty if is_land else min(qty, 4), 
+                    "Side": 0 if is_land else max(0, qty - 4), 
+                    "Cut": 0, 
+                    "Type": sf["type"], 
+                    "CMC": sf["cmc"]
+                })
+            st.session_state.master_df = pd.DataFrame(processed)
+            status.update(label="Analyse terminée !", state="complete")
 
     if 'master_df' in st.session_state:
         df = st.session_state.master_df
         
-        m_count, s_count = df['Main'].sum(), df['Side'].sum()
-        
-        c1, c2, c3 = st.columns(3)
+        # Affichage des stats
+        m_count = df['Main'].sum()
+        s_count = df['Side'].sum()
+        c1, c2 = st.columns(2)
         c1.metric("MAIN DECK", f"{m_count} / 60")
         c2.metric("SIDEBOARD", f"{s_count} / 15")
-        c3.metric("CARTES", len(df))
 
-        # Éditeur de données
-        edited_df = st.data_editor(df, hide_index=True, use_container_width=True, key="editor")
+        # Éditeur de tableau
+        edited_df = st.data_editor(df, hide_index=True, use_container_width=True, key="mtg_editor")
         st.session_state.master_df = edited_df
 
+        # Bouton Génération PDF
         if st.button("📄 GÉNÉRER LE PDF", use_container_width=True, type="primary"):
             pdf = FPDF()
             
             # --- PAGE 1 ---
             pdf.add_page()
-            pdf.set_auto_page_break(False)
             pdf.set_font("Arial", "B", 16)
-            pdf.text(35, 15, "MAGIC: THE GATHERING DECKLIST")
+            pdf.cell(190, 10, "MAGIC: THE GATHERING DECKLIST", 0, 1, "C")
             
-            pdf.set_font("Arial", "", 8); pdf.set_xy(35, 22)
-            pdf.cell(82, 7, f" DATE: {clean_pdf_text(date_v)}", 1)
-            pdf.cell(83, 7, f" LOCATION: {clean_pdf_text(loc_v)}", 1)
-            pdf.set_xy(35, 29); pdf.cell(165, 7, f" EVENT: {clean_pdf_text(event_v)}", 1)
-            pdf.set_xy(35, 36); pdf.cell(165, 7, f" DECK: {clean_pdf_text(dname_v)}", 1)
+            pdf.set_font("Arial", "", 10)
+            pdf.cell(95, 8, f"NOM: {last_n} {first_n}", 1)
+            pdf.cell(95, 8, f"DECK: {dname_v}", 1, 1)
+            pdf.cell(95, 8, f"EVENT: {event_v}", 1)
+            pdf.cell(95, 8, f"DATE: {date_v}", 1, 1)
+            pdf.ln(10)
             
-            pdf.rect(10, 50, 15, 230)
-            with pdf.rotation(90, 17, 160):
-                pdf.set_font("Arial", "B", 7)
-                pdf.text(17, 160, f"NAME: {clean_pdf_text(last_n.upper())} {clean_pdf_text(first_n.upper())}")
+            pdf.set_font("Arial", "B", 12)
+            pdf.cell(190, 8, "LISTE DES CARTES", 1, 1, "C", fill=False)
             
-            # Contenu Page 1
-            spells = edited_df[(edited_df['Main'] > 0) & (~edited_df['Type'].str.contains("Land", na=False))]
-            lands = edited_df[(edited_df['Main'] > 0) & (edited_df['Type'].str.contains("Land", na=False))]
-            
-            y = 56
-            pdf.set_xy(28, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck Spells:", 0, 1)
-            for _, r in spells.iterrows():
-                pdf.set_xy(28, y); pdf.set_font("Arial", "", 7); pdf.cell(8, 4, str(r['Main']), "B", 0, "C")
-                pdf.cell(77, 4, f" {clean_pdf_text(r['Nom'])}", "B", 1); y += 4
-            
-            rx, yr = 118, 50
-            pdf.set_xy(rx, yr); pdf.set_font("Arial", "B", 9); pdf.cell(82, 6, "Lands:", 0, 1); yr += 6
-            for _, r in lands.iterrows():
-                pdf.set_xy(rx, yr); pdf.set_font("Arial", "", 7); pdf.cell(8, 4, str(r['Main']), "B", 0, "C")
-                pdf.cell(74, 4, f" {clean_pdf_text(r['Nom'])}", "B", 1); yr += 4
-            
-            yr += 5; pdf.set_xy(rx, yr); pdf.set_font("Arial", "B", 9); pdf.cell(82, 6, "Sideboard:", 0, 1); yr += 6
-            for _, r in edited_df[edited_df['Side'] > 0].iterrows():
-                pdf.set_xy(rx, yr); pdf.set_font("Arial", "", 7); pdf.cell(8, 4, str(r['Side']), "B", 0, "C")
-                pdf.cell(74, 4, f" {clean_pdf_text(r['Nom'])}", "B", 1); yr += 4
+            pdf.set_font("Arial", "", 9)
+            for _, r in edited_df.iterrows():
+                if r['Main'] > 0:
+                    pdf.cell(10, 6, str(r['Main']), 1, 0, "C")
+                    pdf.cell(180, 6, clean_pdf_text(r['Nom']), 1, 1)
 
             # --- PAGE 2 ---
-            pdf.add_page(); pdf.set_auto_page_break(True, 15)
-            pdf.set_font("Arial", "B", 14); pdf.cell(190, 10, "INVENTAIRE GEEK COMPLET", 0, 1, "C")
+            pdf.add_page()
+            pdf.set_font("Arial", "B", 14)
+            pdf.cell(190, 10, "INVENTAIRE GEEK COMPLET", 0, 1, "C")
             pdf.ln(5)
             
-            cw = [8, 8, 8, 70, 84, 12]
-            pdf.set_fill_color(230, 230, 230); pdf.set_font("Arial", "B", 8)
-            for i, t in enumerate(["M", "S", "C", "Nom", "Type", "CMC"]): pdf.cell(cw[i], 7, t, 1, 0, "C", True)
+            pdf.set_font("Arial", "B", 8)
+            cols = [10, 10, 10, 80, 70, 10]
+            headers = ["M", "S", "C", "Nom", "Type", "CMC"]
+            for i, h in enumerate(headers): pdf.cell(cols[i], 7, h, 1, 0, "C")
             pdf.ln()
             
             pdf.set_font("Arial", "", 7)
             for i, row in edited_df.iterrows():
-                h = 5
-                if pdf.get_y() + h > 280: pdf.add_page()
-                f = (i % 2 == 0)
-                if f: pdf.set_fill_color(248, 248, 248)
-                pdf.cell(8, h, str(row['Main']), 1, 0, "C", f)
-                pdf.cell(8, h, str(row['Side']), 1, 0, "C", f)
-                pdf.cell(8, h, str(row['Cut']), 1, 0, "C", f)
-                pdf.cell(70, h, clean_pdf_text(row['Nom']), 1, 0, "L", f)
-                pdf.cell(84, h, clean_pdf_text(row['Type']), 1, 0, "L", f)
-                pdf.cell(12, h, str(row['CMC']), 1, 1, "C", f)
+                pdf.cell(10, 5, str(row['Main']), 1, 0, "C")
+                pdf.cell(10, 5, str(row['Side']), 1, 0, "C")
+                pdf.cell(10, 5, str(row['Cut']), 1, 0, "C")
+                pdf.cell(80, 5, clean_pdf_text(row['Nom']), 1, 0, "L")
+                pdf.cell(70, 5, clean_pdf_text(row['Type']), 1, 0, "L")
+                pdf.cell(10, 5, str(row['CMC']), 1, 1, "C")
 
             pdf_out = pdf.output(dest='S').encode('latin-1')
-            st.download_button("📥 TELECHARGER", data=pdf_out, file_name="MTG_Assistant.pdf", mime="application/pdf")
+            st.download_button("📥 TÉLÉCHARGER LE PDF", data=pdf_out, file_name="decklist.pdf", mime="application/pdf")
