@@ -3,18 +3,16 @@ import pandas as pd
 from fpdf import FPDF
 import time
 
-# --- 1. DESTRUCTION RADICALE DU CACHE ---
-# On change la clé de version pour forcer Streamlit à tout oublier
-V_KEY = "VERSION_PRO_FINAL_FINAL"
-if V_KEY not in st.session_state:
+# 1. FORCE LE NETTOYAGE DU CACHE AU DÉMARRAGE
+if 'check_vfinal' not in st.session_state:
     for key in list(st.session_state.keys()):
         del st.session_state[key]
-    st.session_state[V_KEY] = True
+    st.session_state['check_vfinal'] = True
 
-st.set_page_config(page_title="MTG Fix 60", layout="wide")
+st.set_page_config(page_title="MTG Assistant 60", layout="wide")
 
 class MTGPDF(FPDF):
-    def draw_box(self, x, y, label, val, w):
+    def header_box(self, x, y, label, val, w):
         self.rect(x, y, w, 8)
         self.set_xy(x, y)
         self.set_font("Arial", "B", 8)
@@ -22,31 +20,32 @@ class MTGPDF(FPDF):
         self.set_font("Arial", "", 9)
         self.cell(w-20, 8, str(val), 0)
 
-    # Rotation ultra-compatible (plus de AttributeError)
-    def draw_name_vertical(self, x, y, text):
+    # Rotation basique manuelle (plus d'AttributeError)
+    def v_name(self, x, y, txt):
         self.set_font("Arial", "B", 10)
         self.rotate(90, x, y)
-        self.text(x, y, text)
+        self.text(x, y, txt)
         self.rotate(0)
 
-def sanitize(txt):
-    # Répare l'erreur Unicode (image_9b9a92.png)
-    return str(txt).replace('//', '-').encode('ascii', 'ignore').decode('ascii')
+def clean_txt(t):
+    # Tue les erreurs Unicode (image_9b9a92.png)
+    return str(t).replace('//', '-').encode('ascii', 'ignore').decode('ascii')
 
-# --- UI SIDEBAR ---
+# --- UI ---
 with st.sidebar:
-    st.header("Joueur")
-    nom_v = st.text_input("NOM", "BELEREN").upper()
-    pre_v = st.text_input("PRENOM", "Jace")
-    event_v = st.text_input("EVENT", "Tournament")
-    loc_v = st.text_input("LIEU", "Montreal")
+    nom = st.text_input("NOM", "BELEREN").upper()
+    pre = st.text_input("PRÉNOM", "Jace")
+    even = st.text_input("EVENT", "Tournament")
+    loc = st.text_input("LIEU", "Montreal")
+    date = st.text_input("DATE", "30/01/2026")
 
-up = st.file_uploader("📂 Chargez votre CSV", type="csv")
+up = st.file_uploader("📂 Chargez le CSV", type="csv")
 
 if up:
-    # On force le calcul à 60 ici pour tuer le "80"
-    if 'data_final' not in st.session_state:
+    # On force une nouvelle clé pour tuer le "80" (image_9b34de.png)
+    if 'data_60_fix' not in st.session_state:
         raw = pd.read_csv(up)
+        # Nettoyage colonnes
         raw.columns = [c.strip() for c in raw.columns]
         n_col = "Card Name" if "Card Name" in raw.columns else raw.columns[0]
         
@@ -56,7 +55,7 @@ if up:
             qty = int(row['Quantity'])
             land = any(x in name.lower() for x in ["island", "swamp", "mountain", "forest", "plains", "land"])
             
-            # LOGIQUE STRICTE 2-1-1 POUR ARRIVER À 60
+            # LOGIQUE 60 CARTES FORCÉE
             if "basic" in name.lower() or name in ["Island", "Swamp", "Mountain", "Forest", "Plains"]:
                 m, s, c = qty, 0, 0
             else:
@@ -64,46 +63,56 @@ if up:
                 s = 1 if qty >= 3 else 0
                 c = max(0, qty - 3)
             cards.append({"Card Name": name, "Main": m, "Side": s, "Cut": c, "IsLand": land})
-        st.session_state.data_final = pd.DataFrame(cards)
+        st.session_state.data_60_fix = pd.DataFrame(cards)
 
-    # Affichage du tableau (clé unique pour éviter le bug d'image_9b30a1)
-    df = st.data_editor(st.session_state.data_final, hide_index=True, key="editor_v99")
-    
-    tm = df['Main'].sum()
-    st.write(f"### Total Main Deck : {tm}")
+    df = st.data_editor(st.session_state.data_60_fix, hide_index=True, key="edit_vFinal")
+    tm, ts = df['Main'].sum(), df['Side'].sum()
+    st.info(f"Vérification : {tm} cartes en Main / {ts} en Side")
 
-    if st.button("📄 GÉNÉRER PDF COMPLET (P1 + P2)", type="primary"):
+    if st.button("📄 GÉNÉRER PDF (P1 + P2)", type="primary", use_container_width=True):
         pdf = MTGPDF()
         
-        # PAGE 1 : FORMULAIRE
+        # --- PAGE 1 ---
         pdf.add_page()
-        pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "MTG DECKLIST", 0, 1, "C")
-        pdf.draw_box(35, 20, "DATE", "30/01/2026", 65)
-        pdf.draw_box(100, 20, "LIEU", loc_v, 85)
-        pdf.draw_box(35, 28, "EVENT", event_v, 150)
-
-        # NOM VERTICAL SANS CRASH
+        pdf.set_font("Arial", "B", 16); pdf.cell(0, 10, "MTG DECKLIST OFFICIAL", 0, 1, "C")
+        pdf.header_box(35, 20, "DATE", date, 65)
+        pdf.header_box(100, 20, "LIEU", loc, 85)
+        pdf.header_box(35, 28, "EVENT", even, 150)
+        
+        # NOM VERTICAL (FIXÉ)
         pdf.rect(10, 50, 15, 230)
-        pdf.draw_name_vertical(18, 160, f"NAME: {nom_v}, {pre_v}")
+        pdf.v_name(18, 160, f"NAME: {nom}, {pre}")
 
-        # LISTE MAIN
+        # MAIN DECK
         pdf.set_xy(30, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
         y = 56
         for _, r in df[(df['Main'] > 0) & (df['IsLand'] == False)].iterrows():
             pdf.set_xy(30, y); pdf.cell(7, 4, str(int(r['Main'])), "B", 0, "C")
-            pdf.cell(78, 4, sanitize(r['Card Name']), "B", 1); y += 4
-            if y > 250: break
+            pdf.cell(78, 4, clean_txt(r['Card Name']), "B", 1); y += 4
+        
+        # LANDS & SIDE
+        rx, ry = 120, 50
+        pdf.set_xy(rx, ry); pdf.cell(75, 6, "Lands:", 0, 1); ry += 6
+        for _, r in df[(df['Main'] > 0) & (df['IsLand'] == True)].iterrows():
+            pdf.set_xy(rx, ry); pdf.cell(7, 4, str(int(r['Main'])), "B", 0, "C")
+            pdf.cell(68, 4, clean_txt(r['Card Name']), "B", 1); ry += 4
+        
+        ry += 10
+        pdf.set_xy(rx, ry); pdf.cell(75, 6, "Sideboard:", 0, 1); ry += 6
+        for _, r in df[df['Side'] > 0].iterrows():
+            pdf.set_xy(rx, ry); pdf.cell(7, 4, str(int(r['Side'])), "B", 0, "C")
+            pdf.cell(68, 4, clean_txt(r['Card Name']), "B", 1); ry += 4
 
         pdf.set_xy(30, 255); pdf.cell(65, 10, "TOTAL MAIN:", 1, 0, "R"); pdf.cell(20, 10, str(int(tm)), 1, 1, "C")
 
-        # PAGE 2 : INVENTAIRE
+        # --- PAGE 2 : INVENTAIRE ---
         pdf.add_page()
         pdf.set_font("Arial", "B", 14); pdf.cell(0, 10, "INVENTAIRE COMPLET", 0, 1, "C"); pdf.ln(5)
         pdf.set_font("Arial", "B", 8)
-        pdf.cell(10, 8, "M", 1); pdf.cell(10, 8, "S", 1); pdf.cell(10, 8, "C", 1); pdf.cell(120, 8, "Nom", 1, 1)
+        pdf.cell(10, 8, "M", 1); pdf.cell(10, 8, "S", 1); pdf.cell(10, 8, "C", 1); pdf.cell(100, 8, "Card Name", 1, 1)
         pdf.set_font("Arial", "", 8)
         for _, r in df.iterrows():
             pdf.cell(10, 7, str(int(r['Main'])), 1); pdf.cell(10, 7, str(int(r['Side'])), 1)
-            pdf.cell(10, 7, str(int(r['Cut'])), 1); pdf.cell(120, 7, sanitize(r['Card Name']), 1, 1)
+            pdf.cell(10, 7, str(int(r['Cut'])), 1); pdf.cell(100, 7, clean_txt(r['Card Name']), 1, 1)
 
-        st.download_button("📥 TELECHARGER LE PDF", data=pdf.output(dest='S').encode('latin-1'), file_name="deck_60_fix.pdf")
+        st.download_button("📥 TÉLÉCHARGER LE PDF RÉPARÉ", data=pdf.output(dest='S').encode('latin-1'), file_name="deck_final_60.pdf")
