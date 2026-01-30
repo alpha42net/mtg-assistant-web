@@ -4,7 +4,7 @@ from fpdf import FPDF
 import requests
 import time
 
-st.set_page_config(page_title="MTG Assistant Pro", layout="wide")
+st.set_page_config(page_title="MTG Decklist Pro", layout="wide")
 
 class MTGPDF(FPDF):
     def draw_header_box(self, x, y, label, value, w, h=8):
@@ -15,10 +15,8 @@ class MTGPDF(FPDF):
         self.set_font("Arial", "", 9)
         self.cell(w-20, h, str(value), 0)
 
-    # Version compatible pour la rotation sans le crash AttributeError
     def vertical_name_safe(self, x, y, text):
         self.set_font("Arial", "B", 10)
-        # On utilise rotate(90) puis on remet à 0
         self.rotate(90, x, y)
         self.text(x, y, text)
         self.rotate(0)
@@ -35,7 +33,7 @@ def get_scryfall_info(name):
         return {"land": "Land" in tl, "basic": "Basic" in tl, "type": tl, "cmc": res.get("cmc", 0)}
     except: return {"land": False, "basic": False, "type": "Unknown", "cmc": 0}
 
-# --- SIDEBAR ---
+# --- INTERFACE ---
 with st.sidebar:
     st.header("Registration")
     last_n = st.text_input("NOM", "BELEREN").upper()
@@ -44,14 +42,12 @@ with st.sidebar:
     loc_v = st.text_input("LOCATION", "Montreal")
     date_v = st.text_input("DATE", time.strftime("%d/%m/%Y"))
     dname_v = st.text_input("DECK NAME", "My Deck")
-    if st.button("🚨 RÉINITIALISER (FORCE 60)"):
-        st.session_state.clear()
-        st.rerun()
 
 file = st.file_uploader("📂 Importez votre CSV", type="csv")
 
 if file:
-    if 'df_final' not in st.session_state:
+    # Si on vient de charger un fichier ou si on veut forcer le calcul
+    if 'raw_data' not in st.session_state or st.button("🔄 RECALCULER 60 CARTES (SANS SUPPRIMER LE FICHIER)"):
         raw = pd.read_csv(file)
         raw.columns = [c.strip() for c in raw.columns]
         n_col = "Card Name" if "Card Name" in raw.columns else raw.columns[0]
@@ -62,22 +58,22 @@ if file:
             info = get_scryfall_info(name)
             total = int(row['Quantity'])
             
-            # --- LOGIQUE DE RÉDUCTION À 60 ---
+            # --- LOGIQUE 2-1-1 ---
             if info["basic"]: m, s, c = total, 0, 0
             else:
-                m = min(total, 2)    # Maximum 2 en Main
-                s = 1 if total >= 3 else 0 # 1 en Side si possible
-                c = max(0, total - 3)      # Le reste en Cut
+                m = min(total, 2)
+                s = 1 if total >= 3 else 0
+                c = max(0, total - 3)
             
             data.append({"Card Name": name, "Main": m, "Side": s, "Cut": c, 
                          "IsLand": info["land"], "Type": info["type"], "CMC": info["cmc"]})
-        st.session_state.df_final = pd.DataFrame(data).sort_values("Card Name")
+        
+        st.session_state.raw_data = pd.DataFrame(data).sort_values("Card Name")
 
-    # Clé d'éditeur v12 pour forcer l'affichage propre
-    edited_df = st.data_editor(st.session_state.df_final, hide_index=True, use_container_width=True, key="editor_v12")
+    # Éditeur de données
+    edited_df = st.data_editor(st.session_state.raw_data, hide_index=True, use_container_width=True, key="mtg_editor_v15")
     tm, ts = edited_df['Main'].sum(), edited_df['Side'].sum()
-
-    st.subheader(f"Total actuel : {tm} Main / {ts} Side")
+    st.info(f"Main Deck: {tm} | Sideboard: {ts}")
 
     if st.button("📄 GÉNÉRER PDF COMPLET (P1 + P2)", use_container_width=True, type="primary"):
         pdf = MTGPDF()
@@ -90,20 +86,18 @@ if file:
         pdf.draw_header_box(35, 28, "EVENT", event_v, 150)
         pdf.draw_header_box(35, 36, "DECK", dname_v, 150)
 
-        # Nom vertical (Pivot safe)
         pdf.rect(10, 50, 15, 230)
         pdf.vertical_name_safe(18, 160, f"NAME: {last_n}, {first_n}")
 
-        # Listes Main (Gauche)
-        pdf.set_xy(30, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
+        # Listes
         y_l = 56
+        pdf.set_xy(30, 50); pdf.set_font("Arial", "B", 9); pdf.cell(85, 6, "Main Deck:", 0, 1)
         for _, r in edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == False)].iterrows():
             pdf.set_xy(30, y_l); pdf.set_font("Arial", "", 8)
             pdf.cell(7, 4, str(int(r['Main'])), "B", 0, "C"); pdf.cell(78, 4, safe_encode(r['Card Name']), "B", 1); y_l += 4
         
         pdf.set_xy(30, 255); pdf.cell(65, 10, "TOTAL MAIN DECK:", 1, 0, "R"); pdf.cell(20, 10, str(int(tm)), 1, 1, "C")
 
-        # Lands & Sideboard (Droite)
         rx, ry = 120, 50
         pdf.set_xy(rx, ry); pdf.set_font("Arial", "B", 9); pdf.cell(75, 6, "Lands:", 0, 1); ry += 6
         for _, r in edited_df[(edited_df['Main'] > 0) & (edited_df['IsLand'] == True)].iterrows():
@@ -118,7 +112,7 @@ if file:
         
         pdf.set_xy(rx, 222); pdf.cell(55, 8, "TOTAL SIDEBOARD:", 1, 0, "R"); pdf.cell(20, 8, str(int(ts)), 1, 1, "C")
 
-        # Cases Juges
+        # Juges
         pdf.set_xy(120, 235); pdf.set_font("Arial", "B", 7); pdf.cell(75, 5, "FOR OFFICIAL USE ONLY", 1, 1, "C")
         pdf.set_xy(120, 240); pdf.cell(37.5, 10, "Deck Check:", 1); pdf.cell(37.5, 10, "Status:", 1)
         pdf.set_xy(120, 250); pdf.cell(37.5, 10, "Judge:", 1); pdf.cell(37.5, 10, "Main Check:", 1)
@@ -140,4 +134,4 @@ if file:
             pdf.cell(65, 7, f" {safe_encode(r['Type'][:35])}", 1, 0, "L", True)
             pdf.cell(15, 7, str(int(r['CMC'])), 1, 1, "C", True)
 
-        st.download_button("📥 TÉLÉCHARGER LE PDF PARFAIT", data=pdf.output(dest='S').encode('latin-1'), file_name="deck_pro.pdf")
+        st.download_button("📥 TÉLÉCHARGER LE PDF COMPLET", data=pdf.output(dest='S').encode('latin-1'), file_name="deck_final.pdf")
